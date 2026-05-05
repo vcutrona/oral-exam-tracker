@@ -79,7 +79,7 @@
 
   .setup-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 1rem;
     margin-bottom: 1.5rem;
   }
@@ -395,6 +395,25 @@
     padding: 4px 0 8px;
   }
 
+
+  .upload-zone {
+    border: 1px dashed var(--border2);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--text2);
+    font-size: 13px;
+  }
+  .upload-zone:hover { border-color: var(--accent); color: var(--text); background: rgba(255,255,255,0.02); }
+  .upload-zone input[type="file"] { display: none; }
+  .upload-zone .upload-icon { font-size: 18px; flex-shrink: 0; }
+  .upload-hint { font-size: 11px; color: var(--text3); margin-bottom: 10px; }
+
   @media (max-width: 680px) {
     .setup-grid { grid-template-columns: 1fr 1fr; }
     .summary-bar { grid-template-columns: 1fr 1fr; }
@@ -427,11 +446,26 @@
         </div>
         <div class="field">
           <label for="default-dur">Default slot (min)</label>
-          <input type="number" id="default-dur" value="15" min="1" max="300">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="number" id="default-dur" value="15" min="1" max="300" style="flex:1;">
+            <button class="btn-ghost" onclick="applyDefaultToAll()" title="Apply this duration to all students" style="white-space:nowrap;padding:7px 12px;font-size:12px;">Apply to all</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="default-gap">Gap between slots (min)</label>
+          <input type="number" id="default-gap" value="0" min="0" max="60" placeholder="0" title="Time reserved between students (e.g. to discuss grade)">
         </div>
       </div>
 
       <div class="section-label">Students / groups</div>
+      <label class="upload-zone" id="upload-zone">
+        <input type="file" id="file-upload" accept=".txt,.csv">
+        <span class="upload-icon">&#8613;</span>
+        <div>
+          <div>Upload a file to import students</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px;">One name per line &nbsp;·&nbsp; or &nbsp;<code style="font-size:11px;">Name, minutes</code>&nbsp; per line &nbsp;·&nbsp; .txt or .csv</div>
+        </div>
+      </label>
       <div id="student-header" style="display:grid;grid-template-columns:1fr 90px 36px;gap:8px;margin-bottom:6px;">
         <span style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.08em;padding-left:2px;">Name</span>
         <span style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.08em;">Min</span>
@@ -448,7 +482,10 @@
   <div id="tracker-panel" style="display:none;">
     <div class="top-bar">
       <span style="font-size:13px;color:var(--text2);" id="session-title">Exam session</span>
-      <button class="btn-ghost" onclick="backToSetup()">← Edit setup</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-ghost" onclick="backToSetup()">← Edit setup</button>
+        <button class="btn-ghost" onclick="if(confirm('Clear session and start over?')){clearState();location.reload();}" style="color:var(--red);border-color:var(--red-bg);">✕ Clear session</button>
+      </div>
     </div>
 
     <div class="summary-bar" id="summary-bar"></div>
@@ -532,6 +569,42 @@ function renderStudents() {
   `).join('');
 }
 
+// ── File import ───────────────────────────────────────────
+document.getElementById('file-upload').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const lines = ev.target.result.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const defaultDur = parseInt(document.getElementById('default-dur').value) || 15;
+    const imported = [];
+    for (const line of lines) {
+      // support: "Name" or "Name, 20" or "Name; 20" or "Name\t20"
+      const parts = line.split(/[,;\t]/).map(p => p.trim());
+      const name = parts[0];
+      const dur  = parts[1] && !isNaN(parseInt(parts[1])) ? parseInt(parts[1]) : defaultDur;
+      if (name) imported.push({ id: Date.now() + Math.random(), name, duration: dur });
+    }
+    if (imported.length === 0) { alert('No valid entries found in the file.'); return; }
+    if (students.length > 0 && !confirm(`Replace the current ${students.length} student(s) with ${imported.length} imported?`)) return;
+    students = imported;
+    renderStudents();
+    // update upload zone label
+    document.getElementById('upload-zone').querySelector('div div:first-child').textContent =
+      `✓ Imported ${imported.length} student(s) from "${file.name}"`;
+  };
+  reader.readAsText(file);
+  // reset so re-uploading same file triggers change
+  this.value = '';
+});
+
+function applyDefaultToAll() {
+  const dur = parseInt(document.getElementById('default-dur').value) || 15;
+  if (!students.length) { alert('No students to update.'); return; }
+  students.forEach(s => s.duration = dur);
+  renderStudents();
+}
+
 function buildTracker() {
   const ss = document.getElementById('session-start').value;
   const se = document.getElementById('session-end').value;
@@ -542,19 +615,38 @@ function buildTracker() {
   sessionStart = toMin(ss);
   sessionEnd   = toMin(se);
 
+  if (sessionEnd <= sessionStart) { alert('Planned end must be after session start.'); return; }
+
+  const available = sessionEnd - sessionStart;
+  const gap = parseInt(document.getElementById('default-gap').value) || 0;
+  const totalSlots = students.reduce((sum, s) => sum + (s.duration || 15), 0) + gap * (students.length - 1);
+  if (totalSlots > available) {
+    const over = totalSlots - available;
+    const proceed = confirm(
+      `⚠️ Slots exceed available time!\n\n` +
+      `Total slots + gaps: ${totalSlots} min\n` +
+      `Available:          ${available} min\n` +
+      `Overflow:           +${over} min\n\n` +
+      `The last student(s) will run past the planned end time.\n` +
+      `Proceed anyway?`
+    );
+    if (!proceed) return;
+  }
+
   let cursor = sessionStart;
   sessionData = students.map((s, i) => {
     const dur = s.duration || 15;
     const ps  = cursor;
     const pe  = cursor + dur;
-    cursor    = pe;
+    cursor    = pe + gap;
     return { ...s, index: i, planned_start: ps, planned_end: pe,
              actual_start: null, actual_end: null, status: 'waiting' };
   });
 
   const defaultDur = students.length > 0 ? (students[0].duration || 15) : 15;
+  const gapLabel = gap > 0 ? ` · ${gap} min gap` : '';
   document.getElementById('session-title').textContent =
-    `Session ${fmt(sessionStart)} → ${fmt(sessionEnd)} · ${defaultDur} min per slot`;
+    `Session ${fmt(sessionStart)} → ${fmt(sessionEnd)} · ${defaultDur} min per slot${gapLabel}`;
   document.getElementById('setup-panel').style.display = 'none';
   document.getElementById('tracker-panel').style.display = 'block';
   render();
@@ -563,6 +655,7 @@ function buildTracker() {
 function backToSetup() {
   document.getElementById('setup-panel').style.display = 'block';
   document.getElementById('tracker-panel').style.display = 'none';
+  saveState();
 }
 
 function startStudent(i) {
@@ -806,12 +899,71 @@ function render() {
   } else {
     footer.innerHTML = '';
   }
+
+  saveState();
 }
 
-// seed two rows
-addStudent('Group A', 15);
-addStudent('Group B', 15);
-renderStudents();
+// ── Persistence ──────────────────────────────────────────
+const STORE_KEY = 'oral-exam-tracker-v1';
+
+function saveState() {
+  const state = {
+    setup: {
+      session_start: document.getElementById('session-start').value,
+      session_end:   document.getElementById('session-end').value,
+      default_dur:   document.getElementById('default-dur').value,
+      students,
+    },
+    tracker: {
+      active: document.getElementById('tracker-panel').style.display !== 'none',
+      sessionStart,
+      sessionEnd,
+      sessionData,
+    }
+  };
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+}
+
+function clearState() {
+  localStorage.removeItem(STORE_KEY);
+}
+
+function restoreState() {
+  let raw;
+  try { raw = localStorage.getItem(STORE_KEY); } catch(e) {}
+  if (!raw) return false;
+  let state;
+  try { state = JSON.parse(raw); } catch(e) { return false; }
+
+  const s = state.setup;
+  document.getElementById('session-start').value = s.session_start || '10:00';
+  document.getElementById('session-end').value   = s.session_end   || '12:30';
+  document.getElementById('default-dur').value   = s.default_dur   || 15;
+  students = s.students || [];
+  renderStudents();
+
+  const t = state.tracker;
+  if (t && t.active && t.sessionData && t.sessionData.length) {
+    sessionStart = t.sessionStart;
+    sessionEnd   = t.sessionEnd;
+    sessionData  = t.sessionData;
+    const defaultDur = students.length > 0 ? (students[0].duration || 15) : 15;
+    document.getElementById('session-title').textContent =
+      `Session ${fmt(sessionStart)} → ${fmt(sessionEnd)} · ${defaultDur} min per slot`;
+    document.getElementById('setup-panel').style.display = 'none';
+    document.getElementById('tracker-panel').style.display = 'block';
+    render();
+  }
+  return true;
+}
+
+// ── Boot ──────────────────────────────────────────────────
+const restored = restoreState();
+if (!restored) {
+  addStudent('Group A', 15);
+  addStudent('Group B', 15);
+  renderStudents();
+}
 </script>
 </body>
 </html>
